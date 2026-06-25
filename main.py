@@ -1,12 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import httpx
-import urllib.parse
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from bs4 import BeautifulSoup
 
 app = FastAPI(
-    title="Nexus API Gateway",
-    description="Microsserviço de orquestração e extração limpa da PGFN via Scrape.do"
+    title="Nexus API Crawler",
+    description="Orquestração robusta PGFN: Proxy Residencial + Extração Limpa"
 )
 
 class ConsultaPGFN(BaseModel):
@@ -16,53 +15,68 @@ class ConsultaPGFN(BaseModel):
 async def buscar_pgfn(consulta: ConsultaPGFN):
     
     SCRAPE_DO_TOKEN = "e8bcafd2393d4e55867b83b8da4b0106f505095266b" 
-    target_url = urllib.parse.quote("https://www.listadevedores.pgfn.gov.br/")
     
-    api_url = f"http://api.scrape.do/?url={target_url}&token={SCRAPE_DO_TOKEN}&super=true&render=true"
+    # O Scrape.do agora atua como escudo de rede (Proxy Residencial)
+    browser_config = BrowserConfig(
+        headless=True,
+        browser_type="chromium",
+        proxy=f"http://{SCRAPE_DO_TOKEN}:@proxy.scrape.do:8080"
+    )
 
-    interactions = [
-        {"action": "wait", "timeout": 4000},
-        {"action": "type", "selector": "#identificacaoInput", "text": consulta.cpf_cnpj},
-        {"action": "evaluate", "script": "document.querySelector('#identificacaoInput').dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('button.btn-warning').removeAttribute('disabled');"},
-        {"action": "click", "selector": "button.btn-warning"},
-        {"action": "waitForSelector", "selector": "dev-resultados", "timeout": 20000}
-    ]
+    # O nosso hack implacável contra o Angular
+    js_bruto = f"""
+    (async () => {{
+        await new Promise(r => setTimeout(r, 4000));
+        let input = document.querySelector('#identificacaoInput');
+        if(input) {{
+            input.value = '{consulta.cpf_cnpj}';
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            input.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+            
+            await new Promise(r => setTimeout(r, 1000));
+            
+            let btn = document.querySelector('button.btn-warning');
+            if(btn) {{
+                btn.removeAttribute('disabled');
+                btn.click();
+            }}
+        }}
+    }})();
+    """
 
-    headers = {
-        "Content-Type": "application/json"
-    }
+    run_config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        magic=True,
+        js_code=js_bruto,
+        wait_for="css:dev-resultados",
+        css_selector="dev-resultados"
+    )
 
-    async with httpx.AsyncClient(timeout=80.0) as client:
+    async with AsyncWebCrawler(config=browser_config) as crawler:
         try:
-            response = await client.request(
-                "GET",
-                api_url, 
-                headers=headers, 
-                json={"interactions": interactions}
+            result = await crawler.arun(
+                url="https://www.listadevedores.pgfn.gov.br/",
+                config=run_config
             )
-            
-            if response.status_code != 200:
-                raise HTTPException(status_code=response.status_code, detail=f"Erro no Scrape.do: {response.text}")
-            
-            # --- INÍCIO DA LIMPEZA DE DADOS (BEAUTIFUL SOUP) ---
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            # Buscamos especificamente a tag de resultados da Receita
+
+            if not result.success:
+                raise HTTPException(status_code=500, detail=result.error_message)
+
+            # Limpeza cirúrgica com BeautifulSoup
+            soup = BeautifulSoup(result.html, "html.parser")
             bloco_resultados = soup.find("dev-resultados")
             
             if bloco_resultados:
-                # Extrai apenas os textos, separados por ' | ', e remove os espaços inúteis
                 texto_limpo = bloco_resultados.get_text(separator=" | ", strip=True)
             else:
-                texto_limpo = "Bloco de resultados não encontrado. Possível instabilidade na página do governo."
-            
+                texto_limpo = "Erro: A tabela não apareceu após o clique."
+
             return {
                 "status": "success",
                 "cpf_cnpj": consulta.cpf_cnpj,
                 "resultado": texto_limpo
             }
-            
-        except httpx.ReadTimeout:
-            raise HTTPException(status_code=504, detail="Timeout: O Scrape.do demorou muito para devolver a tabela.")
+                
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Erro de comunicação: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Erro interno do crawler: {str(e)}")
