@@ -1,5 +1,5 @@
 fastapi
 uvicorn
 pydantic
-httpx
+crawl4ai
 beautifulsoup4
