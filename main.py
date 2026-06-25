@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+import httpx
+import urllib.parse
 
 app = FastAPI(
-    title="Nexus Crawler API",
-    description="Microsserviço de bypass e extração de dados da PGFN"
+    title="Nexus API Gateway",
+    description="Microsserviço ultraleve de orquestração para PGFN via Scrape.do"
 )
 
 class ConsultaPGFN(BaseModel):
@@ -14,61 +15,48 @@ class ConsultaPGFN(BaseModel):
 async def buscar_pgfn(consulta: ConsultaPGFN):
     
     SCRAPE_DO_TOKEN = "e8bcafd2393d4e55867b83b8da4b0106f505095266b" 
+    target_url = urllib.parse.quote("https://www.listadevedores.pgfn.gov.br/")
     
-    browser_config = BrowserConfig(
-        headless=True,
-        browser_type="chromium",
-        proxy=f"http://{SCRAPE_DO_TOKEN}:@proxy.scrape.do:8080"
-    )
+    # URL da API instruindo o Scrape.do a abrir o navegador (render=true) usando IPs residenciais (super=true)
+    api_url = f"http://api.scrape.do/?url={target_url}&token={SCRAPE_DO_TOKEN}&super=true&render=true"
 
-    # Nova injeção de JS: Quebrando a trava do botão
-    js_bruto = f"""
-    (async () => {{
-        await new Promise(r => setTimeout(r, 4000));
-        let input = document.querySelector('#identificacaoInput');
-        if(input) {{
-            input.value = '{consulta.cpf_cnpj}';
-            
-            // Dispara múltiplos alertas para o Angular acordar
-            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            input.dispatchEvent(new Event('blur', {{ bubbles: true }}));
-            
-            await new Promise(r => setTimeout(r, 1000));
-            
-            let btn = document.querySelector('button.btn-warning');
-            if(btn) {{
-                // O HACK DE OURO: Remove a trava de clique
-                btn.removeAttribute('disabled'); 
-                btn.click();
-            }}
-        }}
-    }})();
-    """
+    # A Mágica da Documentação: Enviamos o roteiro exato para os robôs do Scrape.do executarem
+    interactions = [
+        {"action": "wait", "timeout": 4000},
+        {"action": "type", "selector": "#identificacaoInput", "text": consulta.cpf_cnpj},
+        # Forçamos o Angular a acordar e destravamos o botão
+        {"action": "evaluate", "script": "document.querySelector('#identificacaoInput').dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('button.btn-warning').removeAttribute('disabled');"},
+        # Clicamos
+        {"action": "click", "selector": "button.btn-warning"},
+        # Esperamos a tabela aparecer antes deles nos devolverem o HTML
+        {"action": "waitForSelector", "selector": "dev-resultados", "timeout": 20000}
+    ]
 
-    run_config = CrawlerRunConfig(
-        cache_mode=CacheMode.BYPASS,
-        magic=True,
-        js_code=js_bruto,
-        wait_for="css:dev-resultados",
-        css_selector="dev-resultados"
-    )
+    headers = {
+        "Content-Type": "application/json"
+    }
 
-    async with AsyncWebCrawler(config=browser_config) as crawler:
+    # Disparamos a requisição com um limite de 60 segundos (já que o Scrape.do pode demorar um pouco para passar no WAF)
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            result = await crawler.arun(
-                url="https://www.listadevedores.pgfn.gov.br/",
-                config=run_config
+            response = await client.post(
+                api_url, 
+                headers=headers, 
+                json={"interactions": interactions}
             )
-
-            if result.success:
-                return {
-                    "status": "success",
-                    "cpf_cnpj": consulta.cpf_cnpj,
-                    "dados_extraidos": result.markdown
-                }
-            else:
-                raise HTTPException(status_code=500, detail=result.error_message)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail=f"Erro no Scrape.do: {response.text}")
                 
+            # O Scrape.do retorna o HTML da página já processada e resolvida
+            return {
+                "status": "success",
+                "cpf_cnpj": consulta.cpf_cnpj,
+                # Retornamos os primeiros 5000 caracteres do HTML só para confirmar a extração
+                "html_processado": response.text[:5000] 
+            }
+            
+        except httpx.ReadTimeout:
+            raise HTTPException(status_code=504, detail="Timeout: O Scrape.do demorou muito para devolver a tabela.")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Erro no crawler: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Erro de comunicação: {str(e)}")
