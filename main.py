@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+import base64
+import os
 
 app = FastAPI(
     title="Nexus Crawler API",
@@ -17,23 +19,33 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
         browser_type="chromium"
     )
 
+    # Função assíncrona em JS para simular o comportamento humano pausado
+    js_humano = f"""
+    (async () => {{
+        // Espera 3 segundos pro Angular carregar totalmente
+        await new Promise(r => setTimeout(r, 3000));
+        
+        let input = document.querySelector('#identificacaoInput');
+        if(input) {{
+            input.value = '{consulta.cpf_cnpj}';
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            
+            // Espera 1 segundo após digitar
+            await new Promise(r => setTimeout(r, 1000));
+            
+            let btn = document.querySelector('button.btn-warning');
+            if(btn) btn.click();
+        }}
+    }})();
+    """
+
     run_config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
-        magic=True, 
-        
-        # Injeção Avançada para Angular: Preenche, avisa o framework e clica
-        js_code=[
-            f"let input = document.querySelector('#identificacaoInput');",
-            f"input.value = '{consulta.cpf_cnpj}';",
-            "input.dispatchEvent(new Event('input', { bubbles: true }));",
-            "document.querySelector('button.btn-warning').click();"
-        ],
-        
-        # Espera o componente de resultados do Angular renderizar na tela
+        magic=True,
+        js_code=js_humano,
         wait_for="css:dev-resultados",
-        
-        # Extrai tudo que estiver dentro da tag de resultados (tabela ou aviso de vazio)
-        css_selector="dev-resultados" 
+        css_selector="dev-resultados",
+        screenshot=True # Ativa a "visão de raio-x" do robô
     )
 
     async with AsyncWebCrawler(config=browser_config) as crawler:
@@ -43,14 +55,20 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
                 config=run_config
             )
 
-            if result.success:
-                return {
-                    "status": "success",
-                    "cpf_cnpj": consulta.cpf_cnpj,
-                    "dados_extraidos": result.markdown
-                }
-            else:
+            # Se falhar, tentamos salvar o screenshot no disco do servidor para você ver
+            if not result.success:
+                if result.screenshot:
+                    with open("erro_pgfn.jpg", "wb") as f:
+                        f.write(base64.b64decode(result.screenshot))
+                    print("Screenshot do erro salvo como erro_pgfn.jpg no servidor!")
+                    
                 raise HTTPException(status_code=500, detail=result.error_message)
+
+            return {
+                "status": "success",
+                "cpf_cnpj": consulta.cpf_cnpj,
+                "dados_extraidos": result.markdown
+            }
                 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erro no crawler: {str(e)}")
