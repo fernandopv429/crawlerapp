@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-import base64
 
 app = FastAPI(
     title="Nexus Crawler API",
@@ -14,26 +13,35 @@ class ConsultaPGFN(BaseModel):
 @app.post("/api/scrape-pgfn")
 async def buscar_pgfn(consulta: ConsultaPGFN):
     
-    # O seu Token do Scrape.do (já configurado)
     SCRAPE_DO_TOKEN = "e8bcafd2393d4e55867b83b8da4b0106f505095266b" 
     
-    # Configurando o Scrape.do como Super Proxy Residencial
     browser_config = BrowserConfig(
         headless=True,
         browser_type="chromium",
         proxy=f"http://{SCRAPE_DO_TOKEN}:@proxy.scrape.do:8080"
     )
 
-    js_humano = f"""
+    # Nova injeção de JS: Quebrando a trava do botão
+    js_bruto = f"""
     (async () => {{
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 4000));
         let input = document.querySelector('#identificacaoInput');
         if(input) {{
             input.value = '{consulta.cpf_cnpj}';
+            
+            // Dispara múltiplos alertas para o Angular acordar
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            input.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+            
             await new Promise(r => setTimeout(r, 1000));
+            
             let btn = document.querySelector('button.btn-warning');
-            if(btn) btn.click();
+            if(btn) {{
+                // O HACK DE OURO: Remove a trava de clique
+                btn.removeAttribute('disabled'); 
+                btn.click();
+            }}
         }}
     }})();
     """
@@ -41,10 +49,9 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
     run_config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         magic=True,
-        js_code=js_humano,
+        js_code=js_bruto,
         wait_for="css:dev-resultados",
-        css_selector="dev-resultados",
-        screenshot=True 
+        css_selector="dev-resultados"
     )
 
     async with AsyncWebCrawler(config=browser_config) as crawler:
@@ -54,17 +61,14 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
                 config=run_config
             )
 
-            if not result.success:
-                if result.screenshot:
-                    with open("erro_pgfn.jpg", "wb") as f:
-                        f.write(base64.b64decode(result.screenshot))
+            if result.success:
+                return {
+                    "status": "success",
+                    "cpf_cnpj": consulta.cpf_cnpj,
+                    "dados_extraidos": result.markdown
+                }
+            else:
                 raise HTTPException(status_code=500, detail=result.error_message)
-
-            return {
-                "status": "success",
-                "cpf_cnpj": consulta.cpf_cnpj,
-                "dados_extraidos": result.markdown
-            }
                 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erro no crawler: {str(e)}")
