@@ -7,34 +7,29 @@ app = FastAPI(
     description="Microsserviço de bypass e extração de dados da PGFN"
 )
 
-# Modelo de dados que o n8n vai enviar no corpo da requisição
 class ConsultaPGFN(BaseModel):
     cpf_cnpj: str
 
 @app.post("/api/scrape-pgfn")
 async def buscar_pgfn(consulta: ConsultaPGFN):
-    # Configuração do navegador para rodar dentro do Docker (Headless = True)
     browser_config = BrowserConfig(
         headless=True,
         browser_type="chromium"
     )
 
-    # Configuração de execução com a camuflagem (magic=True) para passar pelo WAF
+    # Código atualizado para a sintaxe da versão 0.9.0 do Crawl4AI
     run_config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         magic=True, 
-        page_timeout=30000,
         
-        # Injeção de JavaScript para preencher e clicar na página principal da PGFN
         js_code=[
             f"document.querySelector('#input-cpf-cnpj').value = '{consulta.cpf_cnpj}';",
             "document.querySelector('#btn-consultar').click();"
         ],
         wait_for="css:.tabela-resultados",
-        extraction_strategy={
-            "type": "css",
-            "selector": ".tabela-resultados"
-        }
+        
+        # AQUI FOI A MUDANÇA: Parâmetro direto e simplificado
+        css_selector=".tabela-resultados" 
     )
 
     async with AsyncWebCrawler(config=browser_config) as crawler:
