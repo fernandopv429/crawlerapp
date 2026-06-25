@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 
 app = FastAPI(
     title="Nexus API Crawler",
-    description="Orquestração robusta PGFN: Proxy Residencial + Extração Limpa"
+    description="Orquestração robusta PGFN: Proxy Residencial + Diagnóstico Visual"
 )
 
 class ConsultaPGFN(BaseModel):
@@ -16,25 +16,25 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
     
     SCRAPE_DO_TOKEN = "e8bcafd2393d4e55867b83b8da4b0106f505095266b" 
     
-    # O Scrape.do agora atua como escudo de rede (Proxy Residencial)
     browser_config = BrowserConfig(
         headless=True,
         browser_type="chromium",
         proxy=f"http://{SCRAPE_DO_TOKEN}:@proxy.scrape.do:8080"
     )
 
-    # O nosso hack implacável contra o Angular
+    # Hack reforçado com foco e desfoque para forçar a validação do Angular
     js_bruto = f"""
     (async () => {{
         await new Promise(r => setTimeout(r, 4000));
         let input = document.querySelector('#identificacaoInput');
         if(input) {{
+            input.focus();
             input.value = '{consulta.cpf_cnpj}';
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
             input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            input.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+            input.blur();
             
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, 1500));
             
             let btn = document.querySelector('button.btn-warning');
             if(btn) {{
@@ -50,7 +50,7 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
         magic=True,
         js_code=js_bruto,
         wait_for="css:dev-resultados",
-        css_selector="dev-resultados"
+        screenshot=True # Ligamos a câmera de segurança
     )
 
     async with AsyncWebCrawler(config=browser_config) as crawler:
@@ -60,17 +60,26 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
                 config=run_config
             )
 
+            # Se der o Timeout, devolvemos a foto da tela para o seu terminal
             if not result.success:
-                raise HTTPException(status_code=500, detail=result.error_message)
+                return {
+                    "status": "erro_visual",
+                    "detalhe": result.error_message,
+                    "imagem_base64": result.screenshot
+                }
 
-            # Limpeza cirúrgica com BeautifulSoup
             soup = BeautifulSoup(result.html, "html.parser")
             bloco_resultados = soup.find("dev-resultados")
             
-            if bloco_resultados:
-                texto_limpo = bloco_resultados.get_text(separator=" | ", strip=True)
-            else:
-                texto_limpo = "Erro: A tabela não apareceu após o clique."
+            # Se o site carregou mas a tabela veio vazia, também capturamos a foto
+            if not bloco_resultados:
+                return {
+                    "status": "erro_visual",
+                    "detalhe": "Tabela não encontrada após o clique no botão.",
+                    "imagem_base64": result.screenshot
+                }
+                
+            texto_limpo = bloco_resultados.get_text(separator=" | ", strip=True)
 
             return {
                 "status": "success",
