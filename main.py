@@ -2,10 +2,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import urllib.parse
+from bs4 import BeautifulSoup
 
 app = FastAPI(
     title="Nexus API Gateway",
-    description="Microsserviço ultraleve de orquestração para PGFN via Scrape.do"
+    description="Microsserviço de orquestração e extração limpa da PGFN via Scrape.do"
 )
 
 class ConsultaPGFN(BaseModel):
@@ -33,7 +34,6 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
 
     async with httpx.AsyncClient(timeout=80.0) as client:
         try:
-            # A CORREÇÃO DE OURO: Forçando o envio do JSON (Interactions) usando o método GET
             response = await client.request(
                 "GET",
                 api_url, 
@@ -43,11 +43,23 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
             
             if response.status_code != 200:
                 raise HTTPException(status_code=response.status_code, detail=f"Erro no Scrape.do: {response.text}")
-                
+            
+            # --- INÍCIO DA LIMPEZA DE DADOS (BEAUTIFUL SOUP) ---
+            soup = BeautifulSoup(response.text, "html.parser")
+            
+            # Buscamos especificamente a tag de resultados da Receita
+            bloco_resultados = soup.find("dev-resultados")
+            
+            if bloco_resultados:
+                # Extrai apenas os textos, separados por ' | ', e remove os espaços inúteis
+                texto_limpo = bloco_resultados.get_text(separator=" | ", strip=True)
+            else:
+                texto_limpo = "Bloco de resultados não encontrado. Possível instabilidade na página do governo."
+            
             return {
                 "status": "success",
                 "cpf_cnpj": consulta.cpf_cnpj,
-                "html_processado": response.text[:5000] 
+                "resultado": texto_limpo
             }
             
         except httpx.ReadTimeout:
