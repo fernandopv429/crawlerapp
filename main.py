@@ -17,19 +17,23 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
         browser_type="chromium"
     )
 
-    # Código atualizado para a sintaxe da versão 0.9.0 do Crawl4AI
     run_config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         magic=True, 
         
+        # Injeção Avançada para Angular: Preenche, avisa o framework e clica
         js_code=[
-            f"document.querySelector('#input-cpf-cnpj').value = '{consulta.cpf_cnpj}';",
-            "document.querySelector('#btn-consultar').click();"
+            f"let input = document.querySelector('#identificacaoInput');",
+            f"input.value = '{consulta.cpf_cnpj}';",
+            "input.dispatchEvent(new Event('input', { bubbles: true }));",
+            "document.querySelector('button.btn-warning').click();"
         ],
-        wait_for="css:.tabela-resultados",
         
-        # AQUI FOI A MUDANÇA: Parâmetro direto e simplificado
-        css_selector=".tabela-resultados" 
+        # Espera o componente de resultados do Angular renderizar na tela
+        wait_for="css:dev-resultados",
+        
+        # Extrai tudo que estiver dentro da tag de resultados (tabela ou aviso de vazio)
+        css_selector="dev-resultados" 
     )
 
     async with AsyncWebCrawler(config=browser_config) as crawler:
