@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 import base64
-import os
 
 app = FastAPI(
     title="Nexus Crawler API",
@@ -14,25 +13,25 @@ class ConsultaPGFN(BaseModel):
 
 @app.post("/api/scrape-pgfn")
 async def buscar_pgfn(consulta: ConsultaPGFN):
+    
+    # O seu Token do Scrape.do (já configurado)
+    SCRAPE_DO_TOKEN = "e8bcafd2393d4e55867b83b8da4b0106f505095266b" 
+    
+    # Configurando o Scrape.do como Super Proxy Residencial
     browser_config = BrowserConfig(
         headless=True,
-        browser_type="chromium"
+        browser_type="chromium",
+        proxy=f"http://{SCRAPE_DO_TOKEN}:@proxy.scrape.do:8080"
     )
 
-    # Função assíncrona em JS para simular o comportamento humano pausado
     js_humano = f"""
     (async () => {{
-        // Espera 3 segundos pro Angular carregar totalmente
         await new Promise(r => setTimeout(r, 3000));
-        
         let input = document.querySelector('#identificacaoInput');
         if(input) {{
             input.value = '{consulta.cpf_cnpj}';
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            
-            // Espera 1 segundo após digitar
             await new Promise(r => setTimeout(r, 1000));
-            
             let btn = document.querySelector('button.btn-warning');
             if(btn) btn.click();
         }}
@@ -45,7 +44,7 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
         js_code=js_humano,
         wait_for="css:dev-resultados",
         css_selector="dev-resultados",
-        screenshot=True # Ativa a "visão de raio-x" do robô
+        screenshot=True 
     )
 
     async with AsyncWebCrawler(config=browser_config) as crawler:
@@ -55,13 +54,10 @@ async def buscar_pgfn(consulta: ConsultaPGFN):
                 config=run_config
             )
 
-            # Se falhar, tentamos salvar o screenshot no disco do servidor para você ver
             if not result.success:
                 if result.screenshot:
                     with open("erro_pgfn.jpg", "wb") as f:
                         f.write(base64.b64decode(result.screenshot))
-                    print("Screenshot do erro salvo como erro_pgfn.jpg no servidor!")
-                    
                 raise HTTPException(status_code=500, detail=result.error_message)
 
             return {
